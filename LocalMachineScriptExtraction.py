@@ -38,8 +38,8 @@ logging.basicConfig(
 )
 
 # Folder containing JSON responses
-json_folder = r"X:\hadith_scraping_script\hadith_scraping_script\hadith-json-responses"
-csv_folder = r"X:\hadith_scraping_script\hadith_scraping_script\csv-data-of-json"
+json_folder = r"C:\Users\User\Downloads\data\JSON Scraped"
+csv_folder = r"C:\Users\User\Downloads\data\CSV Data"
 
 # Ensure the CSV folder exists
 os.makedirs(csv_folder, exist_ok=True)
@@ -56,11 +56,12 @@ narrator_chain_file = os.path.join(csv_folder, "hadith_narrator_chain.csv")
 narrator_details_file = os.path.join(csv_folder, "narrator_details.csv")
 narrator_death_records_file = os.path.join(csv_folder, "narrator_death_records.csv")
 narrator_evaluation_file = os.path.join(csv_folder, "narrator_evaluation.csv")
+hadith_content_file = os.path.join(csv_folder, "hadith_content.csv")  # New file for hadith content
 
 # Print file paths for debugging
 print(f"CSV files will be saved to: {csv_folder}")
 for file_path in [hadith_file, book_file, reference_file, sanad_file, narrator_file, narrator_chain_file, 
-                 narrator_details_file, narrator_death_records_file, narrator_evaluation_file]:
+                 narrator_details_file, narrator_death_records_file, narrator_evaluation_file, hadith_content_file]:
     print(f"File path: {file_path}")
     print(f"  - Directory exists: {os.path.exists(os.path.dirname(file_path))}")
     print(f"  - File exists: {os.path.exists(file_path)}")
@@ -369,7 +370,7 @@ def extract_narrator_death_info(rejal_data, ravi_id):
 # Check if CSV files exist and create headers if needed
 def initialize_csv_files():
     files_and_headers = {
-        hadith_file: ["uuid", "hadith_id", "content", "originated_from", "book_id"],
+        hadith_file: ["uuid", "hadith_id", "hadith_content_id", "originated_from", "book_id"],
         book_file: ["id", "title", "page_num", "volume"],
         reference_file: ["id", "hadith_uuid_fk", "hadith_id", "volume", "page_num", "source_id", "source_title"],
         sanad_file: ["id", "hadith_uuid_fk", "sanad_description", "sanad_number"],
@@ -378,7 +379,8 @@ def initialize_csv_files():
         # New tables with their headers
         narrator_details_file: ["id", "narrator_id", "sect", "reliability", "titles", "patronymic"],
         narrator_death_records_file: ["id", "narrator_id", "source", "death_year"],
-        narrator_evaluation_file: ["id", "narrator_id", "source", "evaluation", "summary"]
+        narrator_evaluation_file: ["id", "narrator_id", "source", "evaluation", "summary"],
+        hadith_content_file: ["id", "content"]  # New table for hadith content
     }
     
     for file_path, headers in files_and_headers.items():
@@ -436,7 +438,8 @@ def main():
              open(narrator_chain_file, mode="a", newline="", encoding="utf-8") as narrator_chain_csv, \
              open(narrator_details_file, mode="a", newline="", encoding="utf-8") as narrator_details_csv, \
              open(narrator_death_records_file, mode="a", newline="", encoding="utf-8") as narrator_death_records_csv, \
-             open(narrator_evaluation_file, mode="a", newline="", encoding="utf-8") as narrator_evaluation_csv:
+             open(narrator_evaluation_file, mode="a", newline="", encoding="utf-8") as narrator_evaluation_csv, \
+             open(hadith_content_file, mode="a", newline="", encoding="utf-8") as hadith_content_csv:
             
             hadith_writer = csv.writer(hadith_csv)
             book_writer = csv.writer(book_csv)
@@ -447,12 +450,14 @@ def main():
             narrator_details_writer = csv.writer(narrator_details_csv)
             narrator_death_records_writer = csv.writer(narrator_death_records_csv)
             narrator_evaluation_writer = csv.writer(narrator_evaluation_csv)
+            hadith_content_writer = csv.writer(hadith_content_csv)
             
             # Keep track of processed items
             processed_books = {}
             processed_narrators = {}
             processed_hadiths = {}
             processed_narrator_details = set()
+            processed_hadith_contents = {}  # Track processed hadith contents
             successful_entries = 0
             
             # Process each file
@@ -506,6 +511,19 @@ def main():
                         # Extract content and clean HTML tags
                         hadith_content = re.sub(r"</?[^>]+>", "", hadith_entry.get("text", "N/A"))
                         
+                        # Check if this hadith content already exists
+                        if hadith_content in processed_hadith_contents:
+                            hadith_content_id = processed_hadith_contents[hadith_content]
+                            print(f"Using existing hadith content ID: {hadith_content_id}")
+                        else:
+                            # Generate a content ID
+                            hadith_content_id = f"content_{str(uuid.uuid4())[:8]}"
+                            
+                            # Write content entry
+                            hadith_content_writer.writerow([hadith_content_id, hadith_content])
+                            processed_hadith_contents[hadith_content] = hadith_content_id
+                            print(f"Added new hadith content with ID: {hadith_content_id}")
+                        
                         # Extract narrators and properly join them with comma
                         qaelTitleList = hadith_entry.get("qaelTitleList", ["N/A"])
                         originated_from = ", ".join(qaelTitleList) if isinstance(qaelTitleList, list) else qaelTitleList
@@ -531,8 +549,8 @@ def main():
                             processed_books[book_source_id] = book_id
                             print(f"Added new book: {book_title} with ID: {book_id}")
                         
-                        # Write hadith entry with proper book ID relationship
-                        hadith_writer.writerow([hadith_uuid, hadith_id_from_data, hadith_content, originated_from, book_id])
+                        # Write hadith entry with proper book ID relationship and content ID reference
+                        hadith_writer.writerow([hadith_uuid, hadith_id_from_data, hadith_content_id, originated_from, book_id])
                         print(f"Wrote hadith entry with UUID: {hadith_uuid}")
                         
                         has_valid_data = True
@@ -727,7 +745,7 @@ def main():
             
             # Verify files were written
             for file_path in [hadith_file, book_file, reference_file, sanad_file, narrator_file, narrator_chain_file,
-                             narrator_details_file, narrator_death_records_file, narrator_evaluation_file]:
+                             narrator_details_file, narrator_death_records_file, narrator_evaluation_file, hadith_content_file]:
                 if os.path.exists(file_path):
                     size = os.path.getsize(file_path)
                     print(f"File {os.path.basename(file_path)}: {size} bytes")
