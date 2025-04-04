@@ -11,6 +11,7 @@ import traceback
 # Create a log file name with timestamp
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 log_file_path = f"hadith_processing_log_{timestamp}.txt"
+skipped_files_log = f"skipped_files_log_{timestamp}.txt"  # New log for skipped files
 
 # Set up a file to capture all output
 class Logger:
@@ -406,14 +407,32 @@ def main():
     # Initialize CSV files with headers if needed
     initialize_csv_files()
     
+    # Create a file to track skipped or failed files
+    skipped_files_path = os.path.join(csv_folder, skipped_files_log)
+    with open(skipped_files_path, 'w', encoding='utf-8') as skipped_file:
+        skipped_file.write("Filename,Reason,Timestamp\n")  # Write CSV header
+    
     # Get all JSON files in the folder
     if not os.path.exists(json_folder):
         logging.error(f"JSON folder does not exist: {json_folder}")
         print(f"❌ JSON folder does not exist: {json_folder}")
         return 1
-        
-    json_files = [f for f in os.listdir(json_folder) if f.endswith('.json') and f.startswith('hadith_')]
+    
+    # First, get ALL json files without filtering
+    all_json_files = [f for f in os.listdir(json_folder) if f.endswith('.json')]
+    print(f"Found {len(all_json_files)} total JSON files in the folder")
+    
+    # Then, get files that match our expected pattern
+    json_files = [f for f in all_json_files if f.startswith('hadith_')]
     total_files = len(json_files)
+    
+    # Log files that don't match our pattern
+    non_hadith_files = set(all_json_files) - set(json_files)
+    if non_hadith_files:
+        print(f"Found {len(non_hadith_files)} JSON files that don't start with 'hadith_'")
+        with open(os.path.join(csv_folder, skipped_files_log), 'a', encoding='utf-8') as skipped_file:
+            for filename in non_hadith_files:
+                skipped_file.write(f"{filename},Filename doesn't match expected pattern 'hadith_*.json',{datetime.now().isoformat()}\n")
     
     if total_files == 0:
         logging.error("No hadith JSON files found in the folder.")
@@ -422,12 +441,6 @@ def main():
         
     print(f"Found {total_files} hadith JSON files to process")
     
-    # Process limit for testing (remove in production)
-    process_limit = 459  # Process only first 5 files for testing
-    if process_limit > 0 and process_limit < total_files:
-        json_files = json_files[:process_limit]
-        print(f"Will process {len(json_files)} files for testing purposes")
-
     try:
         # Open CSV files in append mode
         with open(hadith_file, mode="a", newline="", encoding="utf-8") as hadith_csv, \
@@ -486,6 +499,8 @@ def main():
                             file_data = json.load(f)
                     except Exception as e:
                         print(f"Error reading file {filename}: {str(e)}")
+                        with open(os.path.join(csv_folder, skipped_files_log), 'a', encoding='utf-8') as skipped_file:
+                            skipped_file.write(f"{filename},Error reading file: {str(e)},{datetime.now().isoformat()}\n")
                         continue
                     
                     # Extract hadith details and rejal data
@@ -730,6 +745,8 @@ def main():
                     else:
                         print(f"No valid data found for Hadith ID: {hadith_id}")
                         logging.warning(f"No valid data found for Hadith ID: {hadith_id}")
+                        with open(os.path.join(csv_folder, skipped_files_log), 'a', encoding='utf-8') as skipped_file:
+                            skipped_file.write(f"{filename},No valid data found,{datetime.now().isoformat()}\n")
                     
                     if has_valid_data:
                         print(f"Successfully processed Hadith ID: {hadith_id}")
@@ -738,10 +755,19 @@ def main():
                     logging.error(f"Error processing file {filename}: {str(e)}")
                     print(f"⚠️ Error processing file {filename}: {str(e)}")
                     traceback.print_exc()
+                    with open(os.path.join(csv_folder, skipped_files_log), 'a', encoding='utf-8') as skipped_file:
+                        skipped_file.write(f"{filename},Processing error: {str(e).replace(',', ';')},{datetime.now().isoformat()}\n")
                     # Continue with the next file instead of stopping
                     continue
 
             print(f"\n✅ Processed {successful_entries} out of {len(json_files)} hadith entries successfully.")
+            
+            # Print info about skipped files log
+            if os.path.exists(os.path.join(csv_folder, skipped_files_log)):
+                with open(os.path.join(csv_folder, skipped_files_log), 'r', encoding='utf-8') as skipped_file:
+                    skipped_count = len(skipped_file.readlines()) - 1  # Subtract header line
+                print(f"\n⚠️ {skipped_count} files were skipped or failed. Check {skipped_files_log} for details.")
+                print(f"Skipped files log saved to: {os.path.join(csv_folder, skipped_files_log)}")
             
             # Verify files were written
             for file_path in [hadith_file, book_file, reference_file, sanad_file, narrator_file, narrator_chain_file,
@@ -768,6 +794,7 @@ def main():
         return 1
 
     print(f"\nAll output has been saved to: {log_file_path}")
+    print(f"Skipped files log saved to: {os.path.join(csv_folder, skipped_files_log)}")
     return 0
 
 # Execute main function
