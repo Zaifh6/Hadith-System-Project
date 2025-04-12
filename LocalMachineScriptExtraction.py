@@ -5,6 +5,7 @@ import os
 import json
 import logging
 import sys
+import unicodedata
 from datetime import datetime
 import traceback
 import hashlib
@@ -31,6 +32,30 @@ class Logger:
 # Redirect stdout to both console and file
 sys.stdout = Logger(log_file_path)
 sys.stderr = Logger(log_file_path)
+
+# Add Arabic normalization function
+def normalize_arabic(text):
+    text = unicodedata.normalize("NFKC", text)
+    text = re.sub(r'[إأآا]', 'ا', text)
+    text = re.sub(r'[ى]', 'ي', text)
+    text = re.sub(r'[ة]', 'ه', text)
+    text = re.sub(r'[ئؤ]', 'ء', text)
+    text = re.sub(r'[\u064B-\u065F]', '', text)  # Remove diacritics
+    text = ' '.join(text.split())  # Remove extra spaces
+    text = text.replace("ابن", "بن")  # Treat ابن and بن as the same
+    return text
+
+# Function to check if title exists in hint
+def is_normal_narrator(title, hint):
+    # Remove honorifics for better comparison
+    for pattern in ["عليه السلام", "ع"]:
+        title = title.replace(pattern, "").strip()
+    
+    title = normalize_arabic(title)
+    hint = normalize_arabic(hint)
+    
+    # Check if all words in title exist in hint
+    return all(word in hint for word in title.split())
 
 # Configure logging
 logging.basicConfig(
@@ -735,46 +760,33 @@ def main():
                                     # Determine if this is a special narrator based on criteria:
                                     # 1. Name matches known special phrases like "أبيه", etc.
                                     # 2. Multiple ravi IDs (e.g., "عدة من أصحابنا")
-                                    # 3. Name includes honorifics like "عليه السلام" but differs from hint
+                                    # 3. Title doesn't match hint (using word-based normalized comparison)
                                     
                                     special_name_patterns = [
                                         "أبيه", "أبيها", "بعض أصحابنا", "بعض أصحابه", "بعضهم", "غيره", "غيرهم",
                                         "من أخبره", "من حدثه", "الثقة من أصحاب", "عدة من أصحابنا", "أصحابنا"
                                     ]
                                     
-                                    # Check if this is a special case where title doesn't appear in hint
+                                    # Check for explicit special name patterns
+                                    is_special_by_name = any(pattern in narrator_name for pattern in special_name_patterns)
+                                    
+                                    # Check if multiple ravi IDs - always a special case
+                                    is_special_by_multiple_ravis = len(ravi_ids) > 1
+                                    
+                                    # Check if title doesn't appear in hint
                                     is_special_by_honorific = False
                                     if len(ravi_ids) == 1:
                                         ravi_id = ravi_ids[0]
                                         if ravi_id in hint_data:
-                                            # Get hint text
                                             hint_text = hint_data[ravi_id]
                                             
-                                            # Simple exact match check - if title exactly matches first part of hint, not special
-                                            hint_name = hint_text.split(",")[0].strip() if "," in hint_text else hint_text.strip()
-                                            
-                                            # Remove honorifics for cleaner comparison
-                                            normalized_title = narrator_name
-                                            for pattern in ["عليه السلام", "ع"]:
-                                                normalized_title = normalized_title.replace(pattern, "").strip()
-                                            
-                                            # Check different matching scenarios
-                                            # 1. Exact match
-                                            if normalized_title.strip() == hint_name.strip():
-                                                print(f"NOT SPECIAL (exact match): '{normalized_title}' exactly matches '{hint_name}'")
+                                            # Use the improved normalized comparison
+                                            if is_normal_narrator(narrator_name, hint_text):
+                                                print(f"NOT SPECIAL: '{narrator_name}' words found in hint '{hint_text}'")
                                                 is_special_by_honorific = False
-                                            # 2. Title is a substring of hint (e.g., "محمد بن الحسن" vs "محمد بن الحسن بن أحمد بن الوليد")
-                                            elif hint_name.strip().startswith(normalized_title.strip()):
-                                                print(f"NOT SPECIAL (title is prefix of hint): '{normalized_title}' is the beginning part of '{hint_name}'")
-                                                is_special_by_honorific = False
-                                            # 3. Hint is a substring of title 
-                                            elif normalized_title.strip().startswith(hint_name.strip()):
-                                                print(f"NOT SPECIAL (hint is prefix of title): '{hint_name}' is the beginning part of '{normalized_title}'")
-                                                is_special_by_honorific = False  
-                                            # Otherwise, likely a special case
                                             else:
+                                                print(f"SPECIAL CASE: '{narrator_name}' words not found in hint '{hint_text}'")
                                                 is_special_by_honorific = True
-                                                print(f"SPECIAL CASE: '{narrator_name}' vs hint '{hint_name}' - no match found")
                                         else:
                                             # No hint data but has ravi_id - check if it has honorifics
                                             honorific_patterns = ["عليه السلام", "ع"]
@@ -782,14 +794,12 @@ def main():
                                                 is_special_by_honorific = True
                                     
                                     # Combined check for special narrator
-                                    is_special_by_name = any(pattern in narrator_name for pattern in special_name_patterns)
-                                    is_special_by_multiple_ravis = len(ravi_ids) > 1
                                     is_special_narrator = is_special_by_name or is_special_by_multiple_ravis or is_special_by_honorific
                                     
                                     # Debug info
                                     if is_special_narrator:
                                         print(f"SPECIAL NARRATOR: '{narrator_name}' | By name: {is_special_by_name} | By multiple: {is_special_by_multiple_ravis} | By honorific: {is_special_by_honorific}")
-                                        
+                                    
                                     if is_special_narrator:
                                         # Create a unique key for this special narrator type per hadith
                                         special_key = f"{narrator_name}_{hadith_id_from_data}_{sanad_id}"
