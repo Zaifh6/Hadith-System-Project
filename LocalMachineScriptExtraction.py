@@ -7,6 +7,7 @@ import logging
 import sys
 from datetime import datetime
 import traceback
+import hashlib
 
 # Create a log file name with timestamp
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -39,8 +40,8 @@ logging.basicConfig(
 )
 
 # JSON folder containing all JSON files to process
-json_folder = r"X:\hadith_scraping_script\hadith_scraping_script\scraped_hadith_json"
-csv_folder = r"X:\hadith_scraping_script\hadith_scraping_script\csv-data-of-json"
+json_folder = r"C:\Users\User\Downloads\hadith system\test json"
+csv_folder = r"C:\Users\User\Downloads\hadith system\test csv"
 
 # Ensure the CSV folder exists
 os.makedirs(csv_folder, exist_ok=True)
@@ -58,11 +59,13 @@ narrator_details_file = os.path.join(csv_folder, "narrator_details.csv")
 narrator_death_records_file = os.path.join(csv_folder, "narrator_death_records.csv")
 narrator_evaluation_file = os.path.join(csv_folder, "narrator_evaluation.csv")
 hadith_content_file = os.path.join(csv_folder, "hadith_content.csv")  # New file for hadith content
+special_narrator_relation_file = os.path.join(csv_folder, "special_narrator_relation.csv")  # New file for special narrator relations
 
 # Print file paths for debugging
 print(f"CSV files will be saved to: {csv_folder}")
 for file_path in [hadith_file, book_file, reference_file, sanad_file, narrator_file, narrator_chain_file, 
-                 narrator_details_file, narrator_death_records_file, narrator_evaluation_file, hadith_content_file]:
+                 narrator_details_file, narrator_death_records_file, narrator_evaluation_file, hadith_content_file,
+                 special_narrator_relation_file]:
     print(f"File path: {file_path}")
     print(f"  - Directory exists: {os.path.exists(os.path.dirname(file_path))}")
     print(f"  - File exists: {os.path.exists(file_path)}")
@@ -295,6 +298,51 @@ def extract_narrator_evaluation_summary(rejal_data, ravi_id):
     
     return ""
 
+# Helper function to process narrator death records and evaluations
+def process_narrator_evaluations_and_death(ravi_id, rejal_data, narrator_death_records_writer, narrator_evaluation_writer):
+    # Process death records
+    death_records = extract_narrator_death_info(rejal_data, ravi_id)
+    for death_record in death_records:
+        death_record_id = f"death_{str(uuid.uuid4())[:8]}"
+        narrator_death_records_writer.writerow([
+            death_record_id,
+            ravi_id,  # Narrator ID
+            death_record.get("source", ""),
+            death_record.get("death_year", "")
+        ])
+        print(f"Added death record for narrator ID: {ravi_id}")
+    
+    # Extract evaluation summary
+    summary = extract_narrator_evaluation_summary(rejal_data, ravi_id)
+    
+    # Extract detailed evaluations
+    evaluations = extract_narrator_evaluations(rejal_data, ravi_id)
+    for evaluation in evaluations:
+        eval_id = f"eval_{str(uuid.uuid4())[:8]}"
+        # Join sources without adding additional brackets (they're already formatted)
+        source = ", ".join(evaluation.get("sources", []))
+        
+        narrator_evaluation_writer.writerow([
+            eval_id,
+            ravi_id,  # Narrator ID
+            source,
+            evaluation.get("text", ""),
+            summary
+        ])
+        print(f"Added evaluation for narrator ID: {ravi_id}")
+    
+    # If we have a summary but no detailed evaluations, still add a record
+    if summary and not evaluations:
+        eval_id = f"eval_{str(uuid.uuid4())[:8]}"
+        narrator_evaluation_writer.writerow([
+            eval_id,
+            ravi_id,  # Narrator ID
+            "",  # No source
+            "",  # No evaluation text
+            summary  # Only summary
+        ])
+        print(f"Added evaluation summary for narrator ID: {ravi_id}")
+
 # Helper function to extract detailed evaluations
 def extract_narrator_evaluations(rejal_data, ravi_id):
     evaluations = []
@@ -380,13 +428,14 @@ def initialize_csv_files():
         book_file: ["id", "title"],
         reference_file: ["id", "hadith_uuid_fk", "hadith_id", "volume", "page_num", "source_id", "source_title"],
         sanad_file: ["id", "hadith_uuid_fk", "sanad_description", "sanad_number"],
-        narrator_file: ["id", "narrator_name"],
+        narrator_file: ["id", "narrator_name"],  # Removed narrator_type column
         narrator_chain_file: ["id", "sanad_id_fk", "narrator_id_fk", "position"],
         # New tables with their headers
         narrator_details_file: ["id", "narrator_id", "sect", "reliability", "titles", "patronymic"],
         narrator_death_records_file: ["id", "narrator_id", "source", "death_year"],
         narrator_evaluation_file: ["id", "narrator_id", "source", "evaluation", "summary"],
-        hadith_content_file: ["id", "content"]  # New table for hadith content
+        hadith_content_file: ["id", "content"],  # New table for hadith content
+        special_narrator_relation_file: ["id", "hadith_uuid", "hadith_id", "sanad_id", "special_name", "actual_narrator_id"]  # Modified: using actual_narrator_id instead of narrator_name
     }
     
     # First, read existing content IDs from hadith_content table if it exists
@@ -468,7 +517,8 @@ def main():
              open(narrator_details_file, mode="a", newline="", encoding="utf-8") as narrator_details_csv, \
              open(narrator_death_records_file, mode="a", newline="", encoding="utf-8") as narrator_death_records_csv, \
              open(narrator_evaluation_file, mode="a", newline="", encoding="utf-8") as narrator_evaluation_csv, \
-             open(hadith_content_file, mode="a", newline="", encoding="utf-8") as hadith_content_csv:
+             open(hadith_content_file, mode="a", newline="", encoding="utf-8") as hadith_content_csv, \
+             open(special_narrator_relation_file, mode="a", newline="", encoding="utf-8") as special_narrator_relation_csv:
             
             hadith_writer = csv.writer(hadith_csv)
             book_writer = csv.writer(book_csv)
@@ -480,14 +530,14 @@ def main():
             narrator_death_records_writer = csv.writer(narrator_death_records_csv)
             narrator_evaluation_writer = csv.writer(narrator_evaluation_csv)
             hadith_content_writer = csv.writer(hadith_content_csv)
+            special_narrator_relation_writer = csv.writer(special_narrator_relation_csv)
             
             # Keep track of processed items
             processed_books = {}
             processed_narrators = {}
-            processed_narrator_details = set()  # Track narrator details with (narrator_id, sect, reliability, titles, patronymic) keys
-            processed_narrator_death_records = set()  # Track death records with (narrator_id, year, source) keys
-            processed_narrator_evaluations = set()  # Track evaluations with (narrator_id, text, source) keys
-            processed_hadith_contents = existing_content_ids.copy()
+            processed_narrator_details = set()  # We'll track by ravi_id only
+            processed_hadith_contents = existing_content_ids.copy()  # Start with existing content IDs
+            processed_special_narrators = {}  # Track special narrators by unique key
             
             try:
                 print("\n" + "="*50)
@@ -648,11 +698,22 @@ def main():
                                     # Extract all ravi IDs for this title
                                     ravi_ids = []
                                     ravi_names = {}  # Store actual narrator names by raviId
+                                    hint_data = {}   # Store hint data for each ravi_id
+                                    
                                     if "raviList" in sanad_item:
                                         for ravi_entry in sanad_item["raviList"]:
                                             if "raviId" in ravi_entry:
                                                 ravi_id = ravi_entry.get("raviId")
                                                 ravi_ids.append(ravi_id)
+                                                
+                                                # Store hint data
+                                                if "hint" in ravi_entry:
+                                                    hint_data[ravi_id] = ravi_entry.get("hint", "")
+                                                    # Extract name from hint format "name,sect,reliability"
+                                                    hint_parts = hint_data[ravi_id].split(",")
+                                                    if len(hint_parts) > 0:
+                                                        ravi_names[ravi_id] = hint_parts[0]
+                                                        
                                                 # Look for the actual narrator name in the rejal data
                                                 for ravi in rejal_data.get("data", {}).get("raviList", []):
                                                     if ravi.get("raviId") == ravi_id:
@@ -671,35 +732,193 @@ def main():
                                     else:
                                         print(f"No raviID found for '{narrator_name}'")
                                     
-                                    # Process each raviId separately - always get actual narrators from raviTitle
-                                    for ravi_id in ravi_ids if ravi_ids else [None]:
-                                        # Get the actual narrator name from raviTitle
-                                        actual_narrator_name = ravi_names.get(ravi_id, "") if ravi_id else ""
-                                        
-                                        # If we have an actual narrator name, use it; otherwise use the title
-                                        current_narrator_name = actual_narrator_name if actual_narrator_name else narrator_name
-                                        
-                                        # For cases with multiple ravi IDs or generic names like "عدة من أصحابنا",
-                                        # append the hadith ID to make the narrator name unique per hadith
-                                        if len(ravi_ids) > 1 or (not actual_narrator_name and narrator_name in ["عدة من أصحابنا", "N/A"]):
-                                            current_narrator_name = f"{current_narrator_name}_{hadith_id_from_data}"
-                                            print(f"Created unique narrator name with hadith ID: {current_narrator_name}")
+                                    # Determine if this is a special narrator based on criteria:
+                                    # 1. Name matches known special phrases like "أبيه", etc.
+                                    # 2. Multiple ravi IDs (e.g., "عدة من أصحابنا")
+                                    # 3. Name includes honorifics like "عليه السلام" but differs from hint
                                     
-                                        # Check if this narrator already exists in our database
-                                        if current_narrator_name in processed_narrators:
-                                            narrator_id = processed_narrators[current_narrator_name]
-                                            print(f"Using existing narrator: {current_narrator_name}")
-                                        else:
-                                            # Create a numeric ID for narrators instead of a string-based one
-                                            narrator_id = str(uuid.uuid4().int)[:8]  # Using first 8 digits of uuid integer
+                                    special_name_patterns = [
+                                        "أبيه", "أبيها", "بعض أصحابنا", "بعض أصحابه", "بعضهم", "غيره", "غيرهم",
+                                        "من أخبره", "من حدثه", "الثقة من أصحاب", "عدة من أصحابنا", "أصحابنا"
+                                    ]
+                                    
+                                    # Check if this is a special case where title doesn't appear in hint
+                                    is_special_by_honorific = False
+                                    if len(ravi_ids) == 1:
+                                        ravi_id = ravi_ids[0]
+                                        if ravi_id in hint_data:
+                                            # Get hint text
+                                            hint_text = hint_data[ravi_id]
                                             
-                                            # Add narrator to the database
-                                            narrator_writer.writerow([narrator_id, current_narrator_name])
-                                            processed_narrators[current_narrator_name] = narrator_id
-                                            print(f"Added new narrator: {current_narrator_name} (from title: {narrator_name})")
+                                            # Simple exact match check - if title exactly matches first part of hint, not special
+                                            hint_name = hint_text.split(",")[0].strip() if "," in hint_text else hint_text.strip()
+                                            
+                                            # Remove honorifics for cleaner comparison
+                                            normalized_title = narrator_name
+                                            for pattern in ["عليه السلام", "ع"]:
+                                                normalized_title = normalized_title.replace(pattern, "").strip()
+                                            
+                                            # Check different matching scenarios
+                                            # 1. Exact match
+                                            if normalized_title.strip() == hint_name.strip():
+                                                print(f"NOT SPECIAL (exact match): '{normalized_title}' exactly matches '{hint_name}'")
+                                                is_special_by_honorific = False
+                                            # 2. Title is a substring of hint (e.g., "محمد بن الحسن" vs "محمد بن الحسن بن أحمد بن الوليد")
+                                            elif hint_name.strip().startswith(normalized_title.strip()):
+                                                print(f"NOT SPECIAL (title is prefix of hint): '{normalized_title}' is the beginning part of '{hint_name}'")
+                                                is_special_by_honorific = False
+                                            # 3. Hint is a substring of title 
+                                            elif normalized_title.strip().startswith(hint_name.strip()):
+                                                print(f"NOT SPECIAL (hint is prefix of title): '{hint_name}' is the beginning part of '{normalized_title}'")
+                                                is_special_by_honorific = False  
+                                            # Otherwise, likely a special case
+                                            else:
+                                                is_special_by_honorific = True
+                                                print(f"SPECIAL CASE: '{narrator_name}' vs hint '{hint_name}' - no match found")
+                                        else:
+                                            # No hint data but has ravi_id - check if it has honorifics
+                                            honorific_patterns = ["عليه السلام", "ع"]
+                                            if any(pattern in narrator_name for pattern in honorific_patterns):
+                                                is_special_by_honorific = True
+                                    
+                                    # Combined check for special narrator
+                                    is_special_by_name = any(pattern in narrator_name for pattern in special_name_patterns)
+                                    is_special_by_multiple_ravis = len(ravi_ids) > 1
+                                    is_special_narrator = is_special_by_name or is_special_by_multiple_ravis or is_special_by_honorific
+                                    
+                                    # Debug info
+                                    if is_special_narrator:
+                                        print(f"SPECIAL NARRATOR: '{narrator_name}' | By name: {is_special_by_name} | By multiple: {is_special_by_multiple_ravis} | By honorific: {is_special_by_honorific}")
                                         
-                                        # Create a chain entry linking this narrator to this sanad
-                                        chain_id = f"chain_{sanad_id}_{position}_{ravi_id if ravi_id else ''}"
+                                    if is_special_narrator:
+                                        # Create a unique key for this special narrator type per hadith
+                                        special_key = f"{narrator_name}_{hadith_id_from_data}_{sanad_id}"
+                                        
+                                        # Only add one entry for this special narrator in the relation table
+                                        if special_key not in processed_special_narrators:
+                                            # Generate a relation ID
+                                            special_relation_id = f"special_rel_{hashlib.md5(special_key.encode()).hexdigest()[:8]}"
+                                            
+                                            # Find a representative ravi_id to use for joining
+                                            representative_ravi_id = ravi_ids[0] if ravi_ids else ""
+                                            
+                                            # Track this special narrator
+                                            processed_special_narrators[special_key] = {
+                                                "relation_id": special_relation_id,
+                                                "ravi_ids": ravi_ids.copy(),  # Store all related ravi_ids
+                                                "representative_ravi_id": representative_ravi_id  # Store the representative ravi_id
+                                            }
+                                            
+                                            # Add the special relation entry (only once per hadith)
+                                            special_narrator_relation_writer.writerow([
+                                                special_relation_id,
+                                                hadith_uuid,
+                                                hadith_id_from_data,
+                                                sanad_id,
+                                                narrator_name,  # The special name (e.g., "أبيه" or "عدة من أصحابنا")
+                                                representative_ravi_id  # Store representative ravi_id for joining/mapping
+                                            ])
+                                            print(f"Added special relation for '{narrator_name}' in hadith {hadith_id_from_data} with representative ravi_id: {representative_ravi_id}")
+                                            
+                                        # Now add all the actual narrators to the narrator table and link them
+                                        special_relation_id = processed_special_narrators[special_key]["relation_id"]
+                                        
+                                        # Process all the narrators associated with this special relation
+                                        if len(ravi_ids) > 0:
+                                            print(f">>> Processing {len(ravi_ids)} narrators for special case '{narrator_name}': {[ravi_names.get(rid, rid) for rid in ravi_ids]}")
+                                            # Add each narrator to the narrator table if not already there
+                                            for ravi_id in ravi_ids:
+                                                actual_name = ravi_names.get(ravi_id, "")
+                                                
+                                                # If we can't get name from ravi_names, try extracting from hint data
+                                                if not actual_name and ravi_id in hint_data:
+                                                    hint_parts = hint_data[ravi_id].split(",")
+                                                    if hint_parts:
+                                                        actual_name = hint_parts[0].strip()
+                                                
+                                                # Skip if we don't have an actual name after trying both sources
+                                                if not actual_name:
+                                                    print(f"WARNING: Could not find name for narrator with ID {ravi_id}")
+                                                    continue
+                                                
+                                                # Add narrator to the table if not already processed
+                                                if ravi_id not in processed_narrators:
+                                                    narrator_writer.writerow([ravi_id, actual_name])
+                                                    processed_narrators[ravi_id] = actual_name
+                                                    print(f"Added narrator with ID {ravi_id}: {actual_name}")
+                                                else:
+                                                    print(f"Using existing narrator with ID {ravi_id}: {processed_narrators[ravi_id]}")
+                                                
+                                                # Create chain entry linking this narrator to the sanad
+                                                chain_id = f"chain_{sanad_id}_{position}_{ravi_id}"
+                                                narrator_chain_writer.writerow([
+                                                    chain_id,     # Primary key
+                                                    sanad_id,     # Foreign key to sanad
+                                                    ravi_id,      # Foreign key to narrator
+                                                    position      # Position in the chain
+                                                ])
+                                                print(f"Added narrator chain entry for {ravi_id} at position {position}")
+                                                
+                                                # Process narrator details
+                                                if ravi_id not in processed_narrator_details:
+                                                    # Extract narrator titles
+                                                    titles = extract_narrator_titles(rejal_data, ravi_id)
+                                                    
+                                                    # Extract narrator patronymic
+                                                    patronymic = extract_narrator_patronymic(rejal_data, ravi_id)
+                                                    
+                                                    # Extract sect and reliability
+                                                    sect_reliability = extract_narrator_sect_reliability(rejal_data, ravi_id)
+                                                    
+                                                    # Generate IDs for new records
+                                                    details_id = f"details_{str(uuid.uuid4())[:8]}"
+                                                    
+                                                    # Write narrator details
+                                                    narrator_details_writer.writerow([
+                                                        details_id,
+                                                        ravi_id,
+                                                        sect_reliability.get("sect", ""),
+                                                        sect_reliability.get("reliability", ""),
+                                                        titles,
+                                                        patronymic
+                                                    ])
+                                                    
+                                                    # Process death records and evaluations
+                                                    process_narrator_evaluations_and_death(
+                                                        ravi_id, 
+                                                        rejal_data, 
+                                                        narrator_death_records_writer, 
+                                                        narrator_evaluation_writer
+                                                    )
+                                                    
+                                                    # Mark this narrator as processed for additional details
+                                                    processed_narrator_details.add(ravi_id)
+                                        
+                                        # Skip to next narrator since we've handled all the special cases
+                                        position += 1
+                                        continue
+                                    
+                                    # For normal narrators (not special cases)
+                                    for ravi_id in ravi_ids if ravi_ids else [None]:
+                                        if ravi_id is None:
+                                            # Generate a consistent ID for narrators without ravi_id
+                                            narrator_id = f"gen_{hashlib.md5(narrator_name.encode()).hexdigest()[:8]}"
+                                            actual_narrator_name = narrator_name
+                                        else:
+                                            # Use the ravi_id directly
+                                            narrator_id = ravi_id
+                                            actual_narrator_name = ravi_names.get(ravi_id, narrator_name)
+                                        
+                                        # Add entry to narrator table if not already processed
+                                        if narrator_id not in processed_narrators:
+                                            narrator_writer.writerow([narrator_id, actual_narrator_name])
+                                            processed_narrators[narrator_id] = actual_narrator_name
+                                            print(f"Added narrator with ID {narrator_id}: {actual_narrator_name}")
+                                        else:
+                                            print(f"Using existing narrator with ID {narrator_id}: {processed_narrators[narrator_id]}")
+                                        
+                                        # Create chain entry linking this narrator to the sanad
+                                        chain_id = f"chain_{sanad_id}_{position}_{narrator_id}"
                                         narrator_chain_writer.writerow([
                                             chain_id,     # Primary key
                                             sanad_id,     # Foreign key to sanad
@@ -707,107 +926,43 @@ def main():
                                             position      # Position in the chain
                                         ])
                                         
-                                        # Process additional narrator details if we have a ravi ID
-                                        if ravi_id:
-                                            # Extract narrator details
+                                        # Process additional narrator details if we have a real ravi ID
+                                        if ravi_id and ravi_id not in processed_narrator_details:
+                                            # Extract narrator titles
                                             titles = extract_narrator_titles(rejal_data, ravi_id)
+                                            
+                                            # Extract narrator patronymic
                                             patronymic = extract_narrator_patronymic(rejal_data, ravi_id)
+                                            
+                                            # Extract sect and reliability
                                             sect_reliability = extract_narrator_sect_reliability(rejal_data, ravi_id)
                                             
-                                            # Create a unique key for this narrator detail
-                                            detail_key = (
-                                                narrator_id,
+                                            # Generate IDs for new records
+                                            details_id = f"details_{str(uuid.uuid4())[:8]}"
+                                            
+                                            # Write narrator details
+                                            narrator_details_writer.writerow([
+                                                details_id,
+                                                ravi_id,
                                                 sect_reliability.get("sect", ""),
                                                 sect_reliability.get("reliability", ""),
                                                 titles,
                                                 patronymic
+                                            ])
+                                            
+                                            # Process death records and evaluations
+                                            process_narrator_evaluations_and_death(
+                                                ravi_id, 
+                                                rejal_data, 
+                                                narrator_death_records_writer, 
+                                                narrator_evaluation_writer
                                             )
                                             
-                                            # Only add if this specific detail combination doesn't exist for this narrator
-                                            if detail_key not in processed_narrator_details:
-                                                details_id = f"details_{str(uuid.uuid4())[:8]}"
-                                                narrator_details_writer.writerow([
-                                                    details_id,
-                                                    narrator_id,
-                                                    sect_reliability.get("sect", ""),
-                                                    sect_reliability.get("reliability", ""),
-                                                    titles,
-                                                    patronymic
-                                                ])
-                                                processed_narrator_details.add(detail_key)
-                                                print(f"Added details for narrator: {current_narrator_name} (Ravi ID: {ravi_id})")
-                                            else:
-                                                print(f"Skipping duplicate details for narrator: {current_narrator_name}")
-                                            
-                                            # Process death records (one-to-many relationship)
-                                            death_records = extract_narrator_death_info(rejal_data, ravi_id)
-                                            for death_record in death_records:
-                                                death_year = death_record.get("death_year", "")
-                                                source = death_record.get("source", "")
-                                                
-                                                # Create a unique key for this death record
-                                                death_record_key = (narrator_id, death_year, source)
-                                                
-                                                # Only add if this specific death record doesn't exist for this narrator
-                                                if death_record_key not in processed_narrator_death_records:
-                                                    death_record_id = f"death_{str(uuid.uuid4())[:8]}"
-                                                    narrator_death_records_writer.writerow([
-                                                        death_record_id,
-                                                        narrator_id,
-                                                        source,
-                                                        death_year
-                                                    ])
-                                                    processed_narrator_death_records.add(death_record_key)
-                                                    print(f"Added death record for narrator: {current_narrator_name} (Ravi ID: {ravi_id})")
-                                                else:
-                                                    print(f"Skipping duplicate death record for narrator: {current_narrator_name}")
-                                            
-                                            # Extract evaluation summary
-                                            summary = extract_narrator_evaluation_summary(rejal_data, ravi_id)
-                                            
-                                            # Extract detailed evaluations (one-to-many relationship)
-                                            evaluations = extract_narrator_evaluations(rejal_data, ravi_id)
-                                            for evaluation in evaluations:
-                                                eval_text = evaluation.get("text", "")
-                                                source = ", ".join(evaluation.get("sources", []))
-                                                
-                                                # Create a unique key for this evaluation
-                                                eval_key = (narrator_id, eval_text, source)
-                                                
-                                                # Only add if this specific evaluation doesn't exist for this narrator
-                                                if eval_key not in processed_narrator_evaluations:
-                                                    eval_id = f"eval_{str(uuid.uuid4())[:8]}"
-                                                    narrator_evaluation_writer.writerow([
-                                                        eval_id,
-                                                        narrator_id,
-                                                        source,
-                                                        eval_text,
-                                                        summary
-                                                    ])
-                                                    processed_narrator_evaluations.add(eval_key)
-                                                    print(f"Added evaluation for narrator: {current_narrator_name} (Ravi ID: {ravi_id})")
-                                                else:
-                                                    print(f"Skipping duplicate evaluation for narrator: {current_narrator_name}")
-                                            
-                                            # If we have a summary but no detailed evaluations, still add a record
-                                            if summary and not evaluations:
-                                                eval_key = (narrator_id, "", "")  # Empty text and source
-                                                if eval_key not in processed_narrator_evaluations:
-                                                    eval_id = f"eval_{str(uuid.uuid4())[:8]}"
-                                                    narrator_evaluation_writer.writerow([
-                                                        eval_id,
-                                                        narrator_id,
-                                                        "",  # No source
-                                                        "",  # No evaluation text
-                                                        summary  # Only summary
-                                                    ])
-                                                    processed_narrator_evaluations.add(eval_key)
-                                                    print(f"Added evaluation summary for narrator: {current_narrator_name} (Ravi ID: {ravi_id})")
-                                                else:
-                                                    print(f"Skipping duplicate summary-only evaluation for narrator: {current_narrator_name}")
-                                    
-                                    # Increment position for the next narrator in this chain
-                                    position += 1
+                                            # Mark this narrator as processed for additional details
+                                            processed_narrator_details.add(ravi_id)
+                                        
+                                        # Increment position for the next narrator in this chain
+                                        position += 1
                             
                             print(f"Added {position-1} narrators to the chain for sanad #{sanad_list_num}")
                         
@@ -830,7 +985,8 @@ def main():
 
             # Verify files were written
             for file_path in [hadith_file, book_file, reference_file, sanad_file, narrator_file, narrator_chain_file,
-                             narrator_details_file, narrator_death_records_file, narrator_evaluation_file, hadith_content_file]:
+                             narrator_details_file, narrator_death_records_file, narrator_evaluation_file, hadith_content_file,
+                             special_narrator_relation_file]:
                 if os.path.exists(file_path):
                     size = os.path.getsize(file_path)
                     print(f"File {os.path.basename(file_path)}: {size} bytes")
@@ -859,4 +1015,3 @@ def main():
 # Execute main function
 if __name__ == "__main__":
     sys.exit(main())
-
